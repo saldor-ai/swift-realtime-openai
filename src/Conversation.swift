@@ -4,6 +4,7 @@ import Foundation
 public enum ConversationError: Error {
 	case sessionNotFound
 	case converterInitializationFailed
+	case invalidAudioFormat
 }
 
 @Observable
@@ -184,11 +185,41 @@ public extension Conversation {
 		guard !isListening else { return }
 		if !handlingVoice { try startHandlingVoice() }
 
-		Task.detached { [audioEngine] in
-			audioEngine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: audioEngine.inputNode.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+		// Install tap on main thread to ensure audio engine is ready
+		// Remove any existing tap first to avoid conflicts
+		audioEngine.inputNode.removeTap(onBus: 0)
+		
+		// Wait for audio engine to be ready and get a valid format
+		var tapFormat = audioEngine.inputNode.outputFormat(forBus: 0)
+		var retryCount = 0
+		
+		// On simulator, sometimes we need to wait for the format to be initialized
+		while tapFormat.sampleRate == 0 && retryCount < 10 {
+			print("Audio format not ready (attempt \(retryCount + 1)), waiting...")
+			Thread.sleep(forTimeInterval: 0.1) // 100ms delay
+			tapFormat = audioEngine.inputNode.outputFormat(forBus: 0)
+			retryCount += 1
+		}
+		
+		// Verify the format is valid before installing tap
+		guard tapFormat.sampleRate > 0 else {
+			print("Invalid tap format detected after retries: \(tapFormat)")
+			throw ConversationError.invalidAudioFormat
+		}
+		
+		print("Using tap format: \(tapFormat)")
+		
+		print("Installing tap with format: \(tapFormat)")
+		audioEngine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { [weak self] buffer, time in
+			Task { [weak self] in
+				// Log buffer info to debug audio capture
+				if buffer.frameLength > 0 {
+					print("Audio buffer received: \(buffer.frameLength) frames, format: \(buffer.format)")
+				}
 				self?.processAudioBufferFromUser(buffer: buffer)
 			}
 		}
+		print("Tap installed successfully")
 
 		isListening = true
 	}
@@ -212,21 +243,32 @@ public extension Conversation {
 		userConverter.set(converter)
 
 		audioEngine.attach(playerNode)
+		
+		// Use different audio format strategy for simulator vs device
+		#if targetEnvironment(simulator)
+		// Simulator: use automatic format selection
+		audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: nil)
+		#else
+		// Device: use the converter's input format (this was the original working format)
 		audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: converter.inputFormat)
+		#endif
 
 		#if os(iOS)
+		// Configure audio session before starting engine
+		let audioSession = AVAudioSession.sharedInstance()
+		try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+		try audioSession.setActive(true)
+		#endif
+
+		#if os(iOS) && !targetEnvironment(simulator)
+		// Voice processing is only enabled on real iOS devices
+		// Simulator has issues with voice processing and specific audio formats
 		try audioEngine.inputNode.setVoiceProcessingEnabled(true)
 		#endif
 
 		audioEngine.prepare()
 		do {
 			try audioEngine.start()
-
-			#if os(iOS)
-			let audioSession = AVAudioSession.sharedInstance()
-			try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
-			try audioSession.setActive(true)
-			#endif
 
 			handlingVoice = true
 		} catch {
