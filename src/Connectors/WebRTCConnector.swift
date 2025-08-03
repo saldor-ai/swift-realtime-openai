@@ -62,6 +62,8 @@ public final class WebRTCConnector: NSObject, Connector, Sendable {
 		dataChannel.delegate = self
 
 		var request = request
+		request.httpMethod = "POST"
+		request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
 
 		let offer = try await self.connection.offer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: [
 			"OfferToReceiveAudio": "true",
