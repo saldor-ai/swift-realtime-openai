@@ -57,7 +57,7 @@ public final class Conversation: @unchecked Sendable {
 		} }
 	}
 
-	private init(client: RealtimeAPI) {
+	public init(client: RealtimeAPI) {
 		self.client = client
 		(errors, errorStream) = AsyncStream.makeStream(of: ServerError.self)
 
