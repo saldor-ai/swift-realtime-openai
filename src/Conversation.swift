@@ -207,16 +207,51 @@ public extension Conversation {
 		guard !handlingVoice else { return }
 
 #if os(iOS)
-		// 1️⃣ Configure and activate the session first
+		// Enhanced Bluetooth configuration for better car compatibility
 		let audioSession = AVAudioSession.sharedInstance()
-		try audioSession.setCategory(.playAndRecord,
-		                             mode: .voiceChat,
-		                             options: [.defaultToSpeaker, .allowBluetooth])
-		try audioSession.setPreferredSampleRate(48_000)   // optional but typical
-		try audioSession.setActive(true)
+		try audioSession.setCategory(
+			.playAndRecord,
+			mode: .voiceChat,
+			options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+		)
+		try audioSession.setPreferredSampleRate(48_000)
+		
+		// Retry logic for audio session activation
+		var activationRetries = 3
+		while activationRetries > 0 {
+			do {
+				try audioSession.setActive(true)
+				print("🔊 Audio session activated successfully")
+				break
+			} catch {
+				activationRetries -= 1
+				print("⚠️ Audio session activation failed (retries left: \(activationRetries)): \(error)")
+				
+				if activationRetries > 0 {
+					// Brief delay before retry (using Thread.sleep instead of async Task.sleep)
+					Thread.sleep(forTimeInterval: 0.5)
+					
+					// Try to deactivate first, then reactivate
+					try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+					Thread.sleep(forTimeInterval: 0.2)
+				} else {
+					throw error
+				}
+			}
+		}
+		
+		// Log current audio route for debugging
+		let route = audioSession.currentRoute
+		print("🔊 Current audio route after activation:")
+		for output in route.outputs {
+			print("   Output: \(output.portName) (\(output.portType.rawValue))")
+		}
+		for input in route.inputs {
+			print("   Input: \(input.portName) (\(input.portType.rawValue))")
+		}
 #endif
 
-		// 2️⃣ Now the format has a real sample-rate
+		// Now the format has a real sample-rate
 		let hwFormat = audioEngine.inputNode.outputFormat(forBus: 0)
 		guard let converter = AVAudioConverter(from: hwFormat, to: desiredFormat) else {
 			throw ConversationError.converterInitializationFailed
@@ -234,7 +269,6 @@ public extension Conversation {
 		audioEngine.prepare()
 		do {
 			try audioEngine.start()
-
 			handlingVoice = true
 		} catch {
 			print("Failed to enable audio engine: \(error)")
