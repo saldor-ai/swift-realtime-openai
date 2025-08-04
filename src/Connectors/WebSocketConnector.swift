@@ -10,6 +10,7 @@ public final class WebSocketConnector: Connector, Sendable {
 	private let task: Task<Void, Never>
 	private let webSocket: URLSessionWebSocketTask
 	private let stream: AsyncThrowingStream<ServerEvent, Error>.Continuation
+	private let session: URLSession
 
 	private let encoder: JSONEncoder = {
 		let encoder = JSONEncoder()
@@ -20,7 +21,16 @@ public final class WebSocketConnector: Connector, Sendable {
 	public init(connectingTo request: URLRequest) {
 		let (events, stream) = AsyncThrowingStream.makeStream(of: ServerEvent.self)
 
-		let webSocket = URLSession.shared.webSocketTask(with: request)
+		// Create a custom URLSession with longer timeout
+		let configuration = URLSessionConfiguration.default
+		configuration.timeoutIntervalForRequest = 300 // 5 minutes
+		configuration.timeoutIntervalForResource = 600 // 10 minutes
+		configuration.waitsForConnectivity = true
+		
+		let session = URLSession(configuration: configuration)
+		self.session = session
+		
+		let webSocket = session.webSocketTask(with: request)
 		webSocket.resume()
 
 		task = Task.detached { [webSocket, stream] in
@@ -31,6 +41,7 @@ public final class WebSocketConnector: Connector, Sendable {
 
 			while isActive, webSocket.closeCode == .invalid, !Task.isCancelled {
 				guard webSocket.closeCode == .invalid else {
+					print("WebSocket closed with code: \(webSocket.closeCode), reason: \(String(describing: webSocket.closeReason))")
 					stream.finish()
 					isActive = false
 					break
@@ -57,6 +68,16 @@ public final class WebSocketConnector: Connector, Sendable {
 		self.events = events
 		self.stream = stream
 		self.webSocket = webSocket
+		
+		// Set up periodic ping to keep connection alive
+		Task { [weak webSocket] in
+			while !Task.isCancelled {
+				try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+				try? await webSocket?.sendPing { _ in
+					print("WebSocket ping sent and pong received")
+				}
+			}
+		}
 	}
 
 	deinit {
