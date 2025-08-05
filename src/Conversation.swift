@@ -209,18 +209,48 @@ public extension Conversation {
 #if os(iOS)
 		// Enhanced Bluetooth configuration for better car compatibility
 		let audioSession = AVAudioSession.sharedInstance()
+		
+		// Check if we're connected to a Bluetooth device (especially car systems)
+		let currentRoute = audioSession.currentRoute
+		let isBluetoothConnected = currentRoute.outputs.contains { output in
+			return output.portType == .bluetoothA2DP || 
+			       output.portType == .bluetoothHFP || 
+			       output.portType == .bluetoothLE || 
+			       output.portType == .carAudio
+		}
+		
+		print("🚗 Bluetooth connected: \(isBluetoothConnected)")
+		
+		// If connected to Bluetooth (especially car), add an initial delay
+		// This helps car systems properly handle the audio session setup
+		if isBluetoothConnected {
+			print("🚗 Detected car/Bluetooth connection, adding setup delay...")
+			Thread.sleep(forTimeInterval: 1.0)
+		}
+		
+		// Use default mode for car systems, voiceChat for others
+		let mode: AVAudioSession.Mode = isBluetoothConnected ? .default : .voiceChat
+		
 		try audioSession.setCategory(
 			.playAndRecord,
-			mode: .voiceChat,
-			options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+			mode: mode,
+			options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
 		)
 		try audioSession.setPreferredSampleRate(48_000)
 		
-		// Retry logic for audio session activation
+		// Retry logic for audio session activation with longer delays for Bluetooth
 		var activationRetries = 3
+		let retryDelay: TimeInterval = isBluetoothConnected ? 1.0 : 0.5
+		
 		while activationRetries > 0 {
 			do {
-				try audioSession.setActive(true)
+				// For Bluetooth connections, ensure we're not interrupting other audio
+				if isBluetoothConnected {
+					try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+					Thread.sleep(forTimeInterval: 0.5)
+				}
+				
+				try audioSession.setActive(true, options: [])
 				print("🔊 Audio session activated successfully")
 				break
 			} catch {
@@ -228,12 +258,12 @@ public extension Conversation {
 				print("⚠️ Audio session activation failed (retries left: \(activationRetries)): \(error)")
 				
 				if activationRetries > 0 {
-					// Brief delay before retry (using Thread.sleep instead of async Task.sleep)
-					Thread.sleep(forTimeInterval: 0.5)
+					// Longer delay for Bluetooth connections
+					Thread.sleep(forTimeInterval: retryDelay)
 					
 					// Try to deactivate first, then reactivate
 					try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-					Thread.sleep(forTimeInterval: 0.2)
+					Thread.sleep(forTimeInterval: 0.3)
 				} else {
 					throw error
 				}
